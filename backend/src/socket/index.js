@@ -4,6 +4,7 @@ const { ObjectId } = require("mongodb");
  * Registers all Socket.IO chat-related event handlers
  * @param {Object} io - Socket.IO server instance
  * @param {Object} db - MongoDB database instance
+ * Anonymous users join by username only - no authentication required
  */
 function registerChatHandlers(io, db) {
   const messagesCollection = db.collection("messages");
@@ -16,6 +17,7 @@ function registerChatHandlers(io, db) {
 
   /**
    * Helper: send current user list for a room to all sockets in that room
+   * Removes duplicate usernames - shows each unique username only once
    */
   function emitRoomUsers(room) {
     const usersObj = roomUsers[room] || {};
@@ -25,7 +27,18 @@ function registerChatHandlers(io, db) {
       isOnline: true,
       isTyping: !!data.isTyping,
     }));
-    io.to(room).emit("room_users", list);
+    
+    // Remove duplicate usernames - keep only the first occurrence
+    const seenUsernames = new Set();
+    const uniqueUsers = list.filter((user) => {
+      if (seenUsernames.has(user.username)) {
+        return false; // Skip duplicate
+      }
+      seenUsernames.add(user.username);
+      return true;
+    });
+    
+    io.to(room).emit("room_users", uniqueUsers);
   }
 
   io.on("connection", (socket) => {
@@ -57,17 +70,10 @@ function registerChatHandlers(io, db) {
 
       socket.join(currentRoom);
 
-      // register in roomUsers - remove any duplicate usernames in the room first
+      // register in roomUsers - allow multiple users with same username
       if (!roomUsers[currentRoom]) {
         roomUsers[currentRoom] = {};
       }
-      
-      // Remove any existing entries with the same username to prevent duplicates
-      Object.keys(roomUsers[currentRoom]).forEach((id) => {
-        if (id !== socket.id && roomUsers[currentRoom][id].username === name) {
-          delete roomUsers[currentRoom][id];
-        }
-      });
 
       roomUsers[currentRoom][socket.id] = {
         username: currentUsername,
@@ -181,15 +187,13 @@ function registerChatHandlers(io, db) {
           return;
         }
 
-        const reactions = message.reactions || [];
-        const userHasThisEmoji = reactions.some((r) => r.user === user && r.emoji === emoji);
-        
-        if (userHasThisEmoji) {
-          console.log("User already has this emoji");
-          if (typeof callback === "function") callback({ ok: false, error: "already_exists" });
-          return;
-        }
+        // Remove all existing reactions for this message first (only 1 emoji allowed per message)
+        const result1 = await messagesCollection.updateOne(
+          { _id },
+          { $set: { reactions: [] } }
+        );
 
+        // Then add the new reaction
         const result = await messagesCollection.updateOne(
           { _id },
           { $push: { reactions: { user, emoji, at: new Date() } } }
@@ -302,6 +306,112 @@ function registerChatHandlers(io, db) {
     });
 
     /**
+     * Event: delete_message
+     * Payload: { messageId, room, user }
+     * Delete a specific message (only if user is the sender)
+     */
+    socket.on("delete_message", async (data, callback) => {
+      try {
+        const { messageId, room = "global", user = "Anonymous" } = data || {};
+
+        if (!messageId) {
+          if (typeof callback === "function") callback({ ok: false, error: "missing_messageId" });
+          return;
+        }
+
+        let _id;
+        try {
+          _id = new ObjectId(messageId);
+        } catch (err) {
+          if (typeof callback === "function") callback({ ok: false, error: "invalid_id" });
+          return;
+        }
+
+        const message = await messagesCollection.findOne({ _id });
+        if (!message) {
+          if (typeof callback === "function") callback({ ok: false, error: "not_found" });
+          return;
+        }
+
+        // Only allow user who sent the message to delete it
+        if (message.user !== user) {
+          if (typeof callback === "function") callback({ ok: false, error: "unauthorized" });
+          return;
+        }
+
+        // Delete the message
+        await messagesCollection.deleteOne({ _id });
+        console.log("Message deleted:", messageId);
+
+        // Broadcast deletion to all users in the room
+        io.to(message.room || room).emit("message_deleted", { messageId: String(_id) });
+
+        if (typeof callback === "function") callback({ ok: true });
+      } catch (err) {
+        console.error("Error deleting message:", err);
+        if (typeof callback === "function") callback({ ok: false, error: err.message });
+      }
+    });
+
+    /**
+     * Event: edit_message
+     * Payload: { messageId, room, user, newMessage }
+     * Edit a specific message (only if user is the sender)
+     */
+    socket.on("edit_message", async (data, callback) => {
+      try {
+        const { messageId, room = "global", user = "Anonymous", newMessage } = data || {};
+
+        if (!messageId || !newMessage || !newMessage.trim()) {
+          if (typeof callback === "function") callback({ ok: false, error: "missing_fields" });
+          return;
+        }
+
+        let _id;
+        try {
+          _id = new ObjectId(messageId);
+        } catch (err) {
+          if (typeof callback === "function") callback({ ok: false, error: "invalid_id" });
+          return;
+        }
+
+        const message = await messagesCollection.findOne({ _id });
+        if (!message) {
+          if (typeof callback === "function") callback({ ok: false, error: "not_found" });
+          return;
+        }
+
+        // Only allow user who sent the message to edit it
+        if (message.user !== user) {
+          if (typeof callback === "function") callback({ ok: false, error: "unauthorized" });
+          return;
+        }
+
+        // Update the message
+        await messagesCollection.updateOne(
+          { _id },
+          {
+            $set: {
+              message: newMessage.trim(),
+              editedAt: new Date(),
+            },
+          }
+        );
+
+        const updated = await messagesCollection.findOne({ _id });
+        console.log("Message edited:", messageId);
+
+        // Broadcast updated message to all users in the room
+        io.to(message.room || room).emit("receive_message", updated);
+
+        if (typeof callback === "function") callback({ ok: true });
+      } catch (err) {
+        console.error("Error editing message:", err);
+        if (typeof callback === "function") callback({ ok: false, error: err.message });
+      }
+    });
+
+    /**
      * Event: disconnect
      */
     socket.on("disconnect", () => {
@@ -310,6 +420,96 @@ function registerChatHandlers(io, db) {
       if (currentRoom && roomUsers[currentRoom]) {
         delete roomUsers[currentRoom][socket.id];
         emitRoomUsers(currentRoom);
+      }
+    });
+
+    /**
+     * Direct Message Events
+     */
+
+    /**
+     * Event: get_dm_conversations
+     * Get list of DM conversations for current user
+     */
+    socket.on("get_dm_conversations", async (data, callback) => {
+      try {
+        const usersCollection = db.collection("users");
+        const dmsCollection = db.collection("direct_messages");
+
+        // This is a simplified approach - in production you might want to track DMs differently
+        // For now, return empty array as placeholder
+        if (typeof callback === "function") {
+          callback([]);
+        }
+      } catch (err) {
+        console.error("Error getting DM conversations:", err);
+        if (typeof callback === "function") callback({ error: err.message });
+      }
+    });
+
+    /**
+     * Event: start_dm
+     * Start or get existing DM conversation
+     */
+    socket.on("start_dm", async (data, callback) => {
+      try {
+        const { recipientId } = data;
+        const usersCollection = db.collection("users");
+        const dmsCollection = db.collection("direct_messages");
+
+        if (!recipientId) {
+          if (typeof callback === "function")
+            callback({ error: "recipientId required" });
+          return;
+        }
+
+        // Create DM room ID from both users (sorted for consistency)
+        const dmRoomId = [socket.id, recipientId].sort().join("-");
+
+        // Join socket to DM room
+        socket.join(dmRoomId);
+
+        // Return DM room info
+        const dmRoom = {
+          _id: dmRoomId,
+          type: "dm",
+          otherUserId: recipientId,
+        };
+
+        if (typeof callback === "function") callback(dmRoom);
+      } catch (err) {
+        console.error("Error starting DM:", err);
+        if (typeof callback === "function") callback({ error: err.message });
+      }
+    });
+
+    /**
+     * Event: send_dm
+     * Send a direct message
+     */
+    socket.on("send_dm", async (data) => {
+      try {
+        const { dmRoomId, text, senderUsername, senderId } = data;
+
+        if (!dmRoomId || !text || !text.trim()) return;
+
+        const dmsCollection = db.collection("direct_messages");
+
+        const dmDoc = {
+          dmRoomId,
+          senderId,
+          senderUsername,
+          text,
+          createdAt: new Date(),
+          read: false,
+        };
+
+        await dmsCollection.insertOne(dmDoc);
+
+        // Broadcast to both users in DM room
+        io.to(dmRoomId).emit("receive_dm", dmDoc);
+      } catch (err) {
+        console.error("Error sending DM:", err);
       }
     });
   });

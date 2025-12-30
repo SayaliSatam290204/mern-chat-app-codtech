@@ -7,17 +7,23 @@ const cors = require("cors");
 // Load environment variables from .env file
 require("dotenv").config();
 
+// 🔍 Environment check
+console.log("🔍 Environment check:");
+console.log("- MONGO_URI:", process.env.MONGO_URI ? "✅ Set" : "❌ Missing");
+
 // Import database connection function
 const { connectDB } = require("./config/db");
 
 // Import socket event handlers
 const { registerChatHandlers } = require("./socket");
 
+// Import users routes (for user search)
+const { setupUsersRoutes } = require("./routes/users");
+
 /**
  * Initializes and starts the Express + Socket.IO server
  */
 async function startServer() {
-
   // Create Express application
   const app = express();
 
@@ -25,18 +31,23 @@ async function startServer() {
   const server = http.createServer(app);
 
   /**
-   * Initialize Socket.IO server
-   * Enables real-time, bidirectional communication
+   * 🔧 FIXED: Socket.IO server with COMPLETE CORS config
+   * ✅ Multiple origins, credentials, transports fallback
    */
   const io = new Server(server, {
     cors: {
-      origin: "http://localhost:5173", // React development server URL
+      origin: ["http://localhost:5173", "http://localhost:3000"], // Vite + CRA ports
       methods: ["GET", "POST"],
+      credentials: true,  // ✅ Required for auth cookies
+      transports: ['websocket', 'polling'],  // ✅ WebSocket first, polling fallback
     },
   });
 
-  // Enable Cross-Origin Resource Sharing
-  app.use(cors());
+  // Enable Cross-Origin Resource Sharing for REST API
+  app.use(cors({
+    origin: ["http://localhost:5173", "http://localhost:3000"],
+    credentials: true
+  }));
 
   // Enable JSON body parsing for API requests
   app.use(express.json());
@@ -45,28 +56,54 @@ async function startServer() {
    * Basic API route to verify server is running
    */
   app.get("/", (req, res) => {
-    res.send("CodTech Chat API running");
+    res.send("CodTech Chat API running ✅");
   });
 
   /**
-   * Connect to MongoDB database
-   * After successful connection, register socket event handlers
+   * 🔧 FIXED: Connect to MongoDB with timeout & better error handling
    */
-  const db = await connectDB();
-  registerChatHandlers(io, db);
+  try {
+    console.log("🚀 Starting server...");
+    console.log("📡 Connecting to MongoDB...");
+    
+    const db = await Promise.race([
+      connectDB(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Database connection timeout (10s)")), 10000)
+      )
+    ]);
 
-  // Define server port (from environment or default)
-  const PORT = process.env.PORT || 5000;
+    console.log("✅ MongoDB connected successfully");
 
-  /**
-   * Start listening for incoming requests and socket connections
-   */
-  server.listen(PORT, () =>
-    console.log(`Server running on port ${PORT}`)
-  );
+    // Register socket handlers and routes AFTER database connection
+    registerChatHandlers(io, db);
+    setupUsersRoutes(app, db);
+
+    // Define server port (from environment or default)
+    const PORT = process.env.PORT || 5000;
+
+    /**
+     * Start listening for incoming requests and socket connections
+     */
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on http://localhost:${PORT}`);
+      console.log(`📱 Frontend: http://localhost:5173`);
+      console.log(`🔌 Socket.IO ready with WebSocket + Polling fallback`);
+      console.log(`💡 Anonymous chat enabled - no authentication required`);
+    });
+
+  } catch (err) {
+    console.error("💥 Server startup FAILED:", err.message);
+    console.error("💡 FIX:");
+    console.error("   1. Create .env with MONGO_URI=mongodb://localhost:27017/codtech_chat_app");
+    console.error("   2. Start MongoDB: net start MongoDB (Windows)");
+    console.error("   3. Or use Docker: docker run -p 27017:27017 mongo");
+    process.exit(1);
+  }
 }
 
 // Start the server and handle startup errors
 startServer().catch((err) => {
-  console.error("Failed to start server:", err);
+  console.error("💥 Fatal startup error:", err);
+  process.exit(1);
 });

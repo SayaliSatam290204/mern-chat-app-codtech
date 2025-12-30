@@ -1,45 +1,26 @@
-// Import MongoDB client from mongodb package
 const { MongoClient } = require("mongodb");
 
-// MongoDB connection URI loaded from environment variables
-// Example: mongodb://localhost:27017
-const uri = process.env.MONGO_URI;
+const uri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/codtech_chat_app";
+console.log("🔍 MongoDB URI:", uri ? "✅ Loaded" : "❌ Missing");
 
-// Create a new MongoDB client instance
 const client = new MongoClient(uri);
-
-// Variable to store database instance (singleton pattern)
 let db;
 
-/**
- * Connects to MongoDB database
- * Ensures a single connection is reused across the application
- * @returns {Object} MongoDB database instance
- */
 async function connectDB() {
-
-  // If database is already connected, return existing instance
   if (db) return db;
 
   try {
-    // Establish connection with MongoDB server
+    console.log("📡 Connecting to MongoDB...");
     await client.connect();
-
-    // Select database by name
-    db = client.db("codtech_chat_app");
-
-    console.log("MongoDB connected");
-
-    // Return connected database instance
+    db = client.db("codtech_chat_app"); // Ensures correct DB even if not in URI
+    console.log("✅ MongoDB connected to 'codtech_chat_app'");
     return db;
   } catch (err) {
-    // Log error if connection fails
-    console.error("MongoDB connection error:", err);
-
-    // Exit process if database connection fails
+    console.error("❌ MongoDB connection error:", err.message);
+    console.error("💡 1) Update .env: MONGO_URI=mongodb://127.0.0.1:27017/codtech_chat_app");
+    console.error("💡 2) Start MongoDB: net start MongoDB");
     process.exit(1);
   }
 }
 
-// Export the connectDB function for use in server startup
 module.exports = { connectDB };
