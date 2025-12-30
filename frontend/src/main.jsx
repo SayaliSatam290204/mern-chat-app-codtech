@@ -1,3 +1,5 @@
+// App entrypoint: mounts the React application into `#root`.
+// Keep this file minimal — most app logic lives in `App.jsx`.
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "bootstrap/dist/css/bootstrap.min.css";

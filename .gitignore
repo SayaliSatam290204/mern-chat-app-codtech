@@ -11,3 +11,33 @@ frontend/.env
 # build
 dist/
 build/
+
+# OS, editor, and tooling
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# local envs and secrets
+.env.local
+.env.*.local
+.env.test
+.env.production
+
+# coverage
+coverage/
+
+# frontend / vite
+frontend/dist/
+.vite/
+
+# backend
+backend/build/
+backend/logs/
