@@ -10,6 +10,7 @@ require("dotenv").config();
 // 🔍 Environment check
 console.log("🔍 Environment check:");
 console.log("- MONGO_URI:", process.env.MONGO_URI ? "✅ Set" : "❌ Missing");
+console.log("- PORT:", process.env.PORT || "5001 (Default)");
 
 // Import database connection function
 const { connectDB } = require("./config/db");
@@ -31,16 +32,19 @@ async function startServer() {
   const server = http.createServer(app);
 
   /**
-   * 🔧 FIXED: Socket.IO server with COMPLETE CORS config
-   * ✅ Multiple origins, credentials, transports fallback
+   * ✅ FIXED Socket.IO: Complete CORS + transports + path config
    */
   const io = new Server(server, {
     cors: {
-      origin: ["http://localhost:5173", "http://localhost:3000"], // Vite + CRA ports
+      origin: ["http://localhost:5173", "http://localhost:3000"], // Allow Vite & CRA
       methods: ["GET", "POST"],
-      credentials: true,  // ✅ Required for auth cookies
-      transports: ['websocket', 'polling'],  // ✅ WebSocket first, polling fallback
+      credentials: true,
+      allowedHeaders: ["Content-Type"],
     },
+    transports: ['websocket', 'polling'],  // WebSocket first, polling fallback
+    path: '/socket.io/',  // Match frontend default
+    pingTimeout: 60000,   // 60s heartbeat
+    pingInterval: 25000,  // 25s ping
   });
 
   // Enable Cross-Origin Resource Sharing for REST API
@@ -60,7 +64,18 @@ async function startServer() {
   });
 
   /**
-   * 🔧 FIXED: Connect to MongoDB with timeout & better error handling
+   * Socket.IO health check endpoint
+   */
+  app.get("/socket.io/health", (req, res) => {
+    res.json({ 
+      socketio: "healthy", 
+      transports: io.engine.transports,
+      clients: io.engine.clientsCount 
+    });
+  });
+
+  /**
+   * 🔧 Connect to MongoDB with timeout & better error handling
    */
   try {
     console.log("🚀 Starting server...");
@@ -79,8 +94,8 @@ async function startServer() {
     registerChatHandlers(io, db);
     setupUsersRoutes(app, db);
 
-    // Define server port (from environment or default)
-    const PORT = process.env.PORT || 5000;
+    // ✅ UPDATED: Default to 5001 to match your logs and frontend
+    const PORT = process.env.PORT || 5001;
 
     /**
      * Start listening for incoming requests and socket connections
@@ -88,7 +103,7 @@ async function startServer() {
     server.listen(PORT, () => {
       console.log(`✅ Server running on http://localhost:${PORT}`);
       console.log(`📱 Frontend: http://localhost:5173`);
-      console.log(`🔌 Socket.IO ready with WebSocket + Polling fallback`);
+      console.log(`🔌 Socket.IO ready: ws://localhost:${PORT}/socket.io/`);
       console.log(`💡 Anonymous chat enabled - no authentication required`);
     });
 

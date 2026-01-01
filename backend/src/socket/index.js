@@ -12,8 +12,26 @@ function registerChatHandlers(io, db) {
   // index for faster queries by room and time
   messagesCollection.createIndex({ room: 1, createdAt: 1 });
 
-  // In-memory map of users per room: { [room]: { [socketId]: { username } } }
+  // ✅ FIXED: In-memory map of users per room with TTL cleanup
   const roomUsers = {};
+
+  /**
+   * ✅ NEW: Heartbeat cleanup - remove inactive users every 30s
+   */
+  setInterval(() => {
+    const now = Date.now();
+    Object.entries(roomUsers).forEach(([room, users]) => {
+      Object.entries(users).forEach(([socketId, data]) => {
+        if (now - (data.lastSeen || 0) > 60000) { // 60s inactive
+          delete roomUsers[room][socketId];
+        }
+      });
+      // Clean empty rooms
+      if (Object.keys(users).length === 0) {
+        delete roomUsers[room];
+      }
+    });
+  }, 30000);
 
   /**
    * Helper: send current user list for a room to all sockets in that room
@@ -42,11 +60,21 @@ function registerChatHandlers(io, db) {
   }
 
   io.on("connection", (socket) => {
-    console.log("User connected:", socket.id);
+    console.log("✅ User connected:", socket.id);
 
     // store username and room on socket
     let currentRoom = "global";
     let currentUsername = "Anonymous";
+
+    /**
+     * ✅ NEW: User activity heartbeat - keeps user active
+     */
+    socket.on("user_activity", () => {
+      if (roomUsers[currentRoom] && roomUsers[currentRoom][socket.id]) {
+        roomUsers[currentRoom][socket.id].lastSeen = Date.now();
+        emitRoomUsers(currentRoom);
+      }
+    });
 
     /**
      * Event: join_room
@@ -56,8 +84,10 @@ function registerChatHandlers(io, db) {
       const r = room || "global";
       const name = username && username.trim() ? username.trim() : "Anonymous";
 
+      console.log(`📡 ${name} joining room: ${r}`);
+
       // leave previous room if needed
-      if (currentRoom) {
+      if (currentRoom && currentRoom !== r) {
         socket.leave(currentRoom);
         if (roomUsers[currentRoom]) {
           delete roomUsers[currentRoom][socket.id];
@@ -78,9 +108,14 @@ function registerChatHandlers(io, db) {
       roomUsers[currentRoom][socket.id] = {
         username: currentUsername,
         isTyping: false,
+        lastSeen: Date.now(),  // ✅ Track activity time
       };
 
       emitRoomUsers(currentRoom);
+      socket.emit("room_joined", { 
+        room: currentRoom, 
+        users: Object.keys(roomUsers[currentRoom]).length 
+      });
     });
 
     /**
@@ -111,6 +146,7 @@ function registerChatHandlers(io, db) {
 
       if (roomUsers[r] && roomUsers[r][socket.id]) {
         roomUsers[r][socket.id].isTyping = !!flag;
+        roomUsers[r][socket.id].lastSeen = Date.now();  // ✅ Update activity
         emitRoomUsers(r);
       }
 
@@ -153,9 +189,8 @@ function registerChatHandlers(io, db) {
     );
 
     /**
-     * NEW: Event add_reaction
+     * Event: add_reaction
      * Payload: { messageId, room, user, emoji }
-     * Allows users to add multiple different emojis (toggle)
      */
     socket.on("add_reaction", async (data, callback) => {
       console.log("add_reaction event received with data:", data);
@@ -219,9 +254,8 @@ function registerChatHandlers(io, db) {
     });
 
     /**
-     * NEW: Event remove_reaction
+     * Event: remove_reaction
      * Payload: { messageId, room, user, emoji }
-     * Allows users to remove a specific emoji reaction
      */
     socket.on("remove_reaction", async (data, callback) => {
       console.log("remove_reaction event received with data:", data);
@@ -412,11 +446,11 @@ function registerChatHandlers(io, db) {
     });
 
     /**
-     * Event: disconnect
+     * ✅ FIXED: Event: disconnect with proper cleanup
      */
-    socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
-
+    socket.on("disconnect", (reason) => {
+      console.log("❌ User disconnected:", socket.id, reason);
+      
       if (currentRoom && roomUsers[currentRoom]) {
         delete roomUsers[currentRoom][socket.id];
         emitRoomUsers(currentRoom);

@@ -11,7 +11,6 @@ function App() {
   const socketRef = useRef();
 
   // User state - always exist (anonymous user)
-
   const [username, setUsername] = useState(() => {
     const saved = localStorage.getItem("ct_chat_username");
     if (saved) return saved;
@@ -51,7 +50,8 @@ function App() {
     if (!socket) {
       console.log("🔌 Creating socket connection");
       
-      const newSocket = io("http://localhost:5000", {
+      // ✅ FIXED: Connecting to port 5001 (matching your backend)
+      const newSocket = io("http://localhost:5001", {
         transports: ["websocket", "polling"],
         timeout: 20000,
         forceNew: true,
@@ -86,6 +86,20 @@ function App() {
     };
   }, [socket]);
 
+  // ✅ NEW: Heartbeat to keep user active (every 25s)
+  useEffect(() => {
+    if (!socket || !joined) return;
+
+    const heartbeatInterval = setInterval(() => {
+      if (socket.connected) {
+        socket.emit("user_activity");
+        console.log("💓 Heartbeat sent");
+      }
+    }, 25000); // 25 seconds
+
+    return () => clearInterval(heartbeatInterval);
+  }, [socket, joined]);
+
   // 🔧 Socket event handlers - CALLED AFTER ALL OTHER HOOKS
   useEffect(() => {
     if (!joined || !socket) return;
@@ -113,6 +127,7 @@ function App() {
     });
 
     socket.on("room_users", (list) => {
+      console.log("👥 Room users updated:", list.length);
       setUsers(list);
     });
 
@@ -134,6 +149,10 @@ function App() {
       setMessages((prev) => prev.filter((m) => String(m._id) !== String(messageId)));
     });
 
+    socket.on("room_joined", ({ room: joinedRoom, users: userCount }) => {
+      console.log("✅ Joined room:", joinedRoom, "with", userCount, "users");
+    });
+
     return () => {
       socket.off("chat_history");
       socket.off("receive_message");
@@ -141,8 +160,9 @@ function App() {
       socket.off("user_typing");
       socket.off("chat_cleared");
       socket.off("message_deleted");
+      socket.off("room_joined");
     };
-  }, [joined, room, socket]);
+  }, [joined, room, socket, username]);
 
   const handleJoin = (e) => {
     e.preventDefault();
@@ -480,7 +500,7 @@ function App() {
                       <span className="badge bg-success me-1 rounded-pill">
                         ● 
                       </span>
-                      Online
+                      {socketConnected ? "Online" : "Connecting..."}
                     </div>
                   </div>
                 </div>
@@ -529,7 +549,7 @@ function App() {
                 <input
                   type="text"
                   className={`form-control form-control-sm ${inputBg}`}
-                  placeholder=" Search messages by user or text..."
+                  placeholder="🔍 Search messages by user or text..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -701,7 +721,7 @@ function App() {
                             color: "white",
                           }}
                         >
-                          👤
+                          {u.username === username ? avatar : "👤"}
                         </div>
                         <div className="flex-grow-1">
                           <div
